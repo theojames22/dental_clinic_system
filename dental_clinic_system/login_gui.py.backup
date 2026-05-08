@@ -1,0 +1,1449 @@
+"""
+PyQt6 conversion of login_gui.py
+Preserves original logic, method names, and behavior. Only the UI framework changed
+from customtkinter to PyQt6. Visual layout matches the provided screenshot.
+"""
+
+import re
+import sys
+import json
+import os
+from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtGui import QIcon, QPixmap, QFont, QPainter, QColor, QBrush, QPen
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QMainWindow, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox, QGraphicsDropShadowEffect,
+    QScrollArea, QSizePolicy, QStackedWidget, QRadioButton
+)
+from databasepy import *
+from dashboard_gui.style import *
+from dashboard_gui.dashboard_gui import DashboardGUI
+from buttons.password_toggle_button import PasswordToggleButton
+from buttons.custom_checkbox import CustomCheckbox
+
+
+# -----------------------------------------------------------------------------
+# LoginGUI (PyQt6)
+# -----------------------------------------------------------------------------
+class LoginGUI(QMainWindow):
+    def __init__(self, root=None, db=None):
+        super().__init__()
+        self.root = root  # kept for API parity; not used in Qt
+        self.db = db
+        self.login_attempts = {}
+        self.reset_codes = {}
+        
+        # Setup QSettings for persistent storage
+        self.settings = QSettings("LC Dental Care", "DentalClinicSystem")
+        
+        # Load saved credentials
+        self.saved_credentials = self.load_saved_credentials()
+        
+        self.signup_strength_indicator = None
+        self.signup_strength_label = None
+        self.password_visible = False
+        self.selected_recovery_method = None
+        self.recovery_username = None
+        self.verification_code = None
+
+        self.setWindowTitle("DentalCare - Login")
+        self.setMinimumSize(1024, 768)
+
+        # Top-right exit (X) button
+        self.exit_btn = QPushButton("X", self)
+        self.exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.exit_btn.setFixedSize(45, 45)
+        self.exit_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(220, 53, 69, 200);
+                color: white;
+                border: 2px solid #DC3545;
+                border-radius: 10px;
+                font-weight: 700;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background: rgba(220, 53, 69, 255);
+            }
+        """)
+        self.exit_btn.clicked.connect(self.exit)
+
+        self.showFullScreen()
+        
+        # Position button at top-right after window is shown
+        QTimer.singleShot(100, self._position_exit_button)
+
+    def load_saved_credentials(self):
+        """Load saved credentials from QSettings"""
+        try:
+            username = self.settings.value("saved_username", "", type=str)
+            remember = self.settings.value("remember_me", False, type=bool)
+            return {"username": username, "remember": remember}
+        except Exception as e:
+            print(f"Error loading saved credentials: {e}")
+            return {"username": "", "remember": False}
+
+    def save_credentials(self, username, remember):
+        """Save credentials to QSettings"""
+        try:
+            if remember:
+                self.settings.setValue("saved_username", username)
+                self.settings.setValue("remember_me", True)
+            else:
+                self.settings.remove("saved_username")
+                self.settings.setValue("remember_me", False)
+        except Exception as e:
+            print(f"Error saving credentials: {e}")
+
+    # -------------------------------------------------------------------------
+    def _position_exit_button(self):
+        """Position exit button at top-right corner"""
+        self.exit_btn.move(self.width() - 60, 15)
+        self.exit_btn.raise_()
+
+    # -------------------------------------------------------------------------
+    def _make_input(self, placeholder, icon="", password=False):
+        """Create a rounded input field with leading icon and optional eye toggle."""
+        frame = QFrame()
+        frame.setFixedHeight(52)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color:#F3F4F6;
+                border:1px solid #E5E7EB;
+                border-radius:10px;
+            }
+        """)
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(14, 0, 14, 0)
+        h.setSpacing(10)
+        
+        icon_lbl = QLabel(icon)
+        icon_lbl.setStyleSheet("color:#9CA3AF;font-size:16px;background:transparent;border:none;")
+        h.addWidget(icon_lbl)
+        
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.setStyleSheet("""
+            QLineEdit {
+                background:transparent;
+                border:none;
+                color:#1F2937;
+                font-size:14px;
+            }
+        """)
+        if password:
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+        h.addWidget(edit, 1)
+        
+        if password:
+            eye = PasswordToggleButton(parent=frame, on_text="🙈", off_text="👁")
+            eye.set_state(is_on=False)  # password hidden => show eye
+            eye.clicked.connect(lambda: self.toggle_password(edit, eye))
+            h.addWidget(eye)
+
+        
+        return {"frame": frame, "edit": edit}
+    
+    # -------------------------------------------------------------------------
+    def toggle_password(self, edit, eye_button):
+        """Toggle password visibility"""
+        if edit.echoMode() == QLineEdit.EchoMode.Password:
+            edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            eye_button.set_state(True)
+        else:
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+            eye_button.set_state(False)
+
+    # -------------------------------------------------------------------------
+    def show(self):
+        self.clear_window()
+
+        # Create central widget with background
+        central = QWidget()
+        self.setCentralWidget(central)
+        
+        # Use QStackedLayout or simple grid to overlay content on background
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Set background using stylesheet (no backslashes in f-strings)
+        image_path = "D:/dental_clinic_system/image/background.png"
+        # Check if background image exists, if not use a gradient
+        if os.path.exists(image_path):
+            central.setStyleSheet(f"""
+                QWidget {{
+                    background-image: url("{image_path}");
+                    background-position: center;
+                    background-repeat: no-repeat;
+                }}
+            """)
+        else:
+            central.setStyleSheet("""
+                QWidget {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #E8F0FE, stop:1 #F0F4F8);
+                }
+            """)
+        
+        # Create login card container
+        login_container = QWidget(central)
+        login_container.setStyleSheet("background: transparent;")
+        
+        container_layout = QVBoxLayout(login_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.addStretch()
+        
+        card_row = QHBoxLayout()
+        card_row.addStretch()
+        
+        # Create login card
+        login_card = QFrame()
+        login_card.setObjectName("loginCard")
+        login_card.setFixedSize(580, 720)
+        login_card.setStyleSheet("""
+            #loginCard {
+                background-color: white;
+                border-radius: 20px;
+            }
+        """)
+        shadow = QGraphicsDropShadowEffect(login_card)
+        shadow.setBlurRadius(50)
+        shadow.setOffset(0, 15)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        login_card.setGraphicsEffect(shadow)
+        
+        content = QVBoxLayout(login_card)
+        content.setContentsMargins(55, 55, 55, 45)
+        content.setSpacing(0)
+        
+        # Header
+        title = QLabel("Welcome to LC Dental Care!")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color:#1F2937;font-size:32px;font-weight:700;background:transparent;")
+        content.addWidget(title)
+        content.addSpacing(12)
+        
+        subtitle = QLabel("Please enter your clinical credentials to access the dashboard.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color:#6B7280;font-size:14px;background:transparent;")
+        content.addWidget(subtitle)
+        content.addSpacing(35)
+        
+        # Username
+        u_lbl = QLabel("Username or Clinical Email")
+        u_lbl.setStyleSheet("color:#1F2937;font-size:14px;font-weight:700;background:transparent;")
+        content.addWidget(u_lbl)
+        content.addSpacing(10)
+        
+        self.username_entry = self._make_input("Enter your Username")
+        content.addWidget(self.username_entry["frame"])
+        content.addSpacing(25)
+        
+        # Password
+        p_lbl = QLabel("Password")
+        p_lbl.setStyleSheet("color:#1F2937;font-size:14px;font-weight:700;background:transparent;")
+        content.addWidget(p_lbl)
+        content.addSpacing(10)
+        
+        self.password_entry = self._make_input("Enter your password", password=True)
+        content.addWidget(self.password_entry["frame"])
+        content.addSpacing(22)
+        
+        # Options row
+        opt_row = QHBoxLayout()
+        self.remember_cb = CustomCheckbox(parent=None, text="Remember me")
+        self.remember_cb.setChecked(self.saved_credentials.get("remember", False))
+
+        opt_row.addWidget(self.remember_cb)
+        opt_row.addStretch()
+        self.forgot_btn = QPushButton("Forgot password?")
+        self.forgot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.forgot_btn.setFlat(True)
+        self.forgot_btn.setStyleSheet("""
+            QPushButton {
+                color:#1E40AF;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover {
+                color:#1E3A8A;
+            }
+        """)
+        self.forgot_btn.clicked.connect(self.forgot_password)
+        opt_row.addWidget(self.forgot_btn)
+        content.addLayout(opt_row)
+        content.addSpacing(28)
+        
+        # Login button
+        self.login_btn = QPushButton("Secure Login")
+        self.login_btn.setFixedHeight(52)
+        self.login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.login_btn.setStyleSheet("""
+            QPushButton {
+                background-color:#1E3A8A;
+                color:white;
+                font-size:15px;
+                font-weight:700;
+                border-radius:10px;
+                border: none;
+            }
+            QPushButton:hover { background-color:#1E40AF; }
+            QPushButton:disabled { background-color:#94A3B8; }
+        """)
+        self.login_btn.clicked.connect(self.do_login)
+        content.addWidget(self.login_btn)
+        content.addSpacing(25)
+        
+        # Sign up row
+        sign_row = QHBoxLayout()
+        sign_row.addStretch()
+        sign_lbl = QLabel("New to DentalCare?")
+        sign_lbl.setStyleSheet("color:#6B7280;font-size:13px;background:transparent;")
+        sign_row.addWidget(sign_lbl)
+        self.signup_link = QPushButton("Create an Account")
+        self.signup_link.setFlat(True)
+        self.signup_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.signup_link.setStyleSheet("""
+            QPushButton {
+                color:#1E40AF;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover {
+                color:#1E3A8A;
+            }
+        """)
+        self.signup_link.clicked.connect(self.show_signup)
+        sign_row.addWidget(self.signup_link)
+        sign_row.addStretch()
+        content.addLayout(sign_row)
+        content.addStretch()
+        
+        footer = QLabel("Need staff access? Contact Administrator")
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer.setStyleSheet("color:#9CA3AF;font-size:12px;background:transparent;")
+        content.addWidget(footer)
+        
+        card_row.addWidget(login_card)
+        card_row.addStretch()
+        container_layout.addLayout(card_row)
+        container_layout.addStretch()
+        
+        # Add both background and container to main layout
+        main_layout.addWidget(login_container)
+        
+        # Pre-fill saved credentials
+        saved_username = self.saved_credentials.get("username", "")
+        if saved_username:
+            self.username_entry["edit"].setText(saved_username)
+            # If username is filled, focus on password field
+            self.password_entry["edit"].setFocus()
+        else:
+            # Set initial focus
+            self.username_entry["edit"].setFocus()
+        
+        super().show()
+        QTimer.singleShot(50, self._position_exit_button)
+    
+    # -------------------------------------------------------------------------
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            if self.isFullScreen():
+                self.showNormal()
+        elif event.key() == Qt.Key.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+        elif event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+            self.do_login()
+        else:
+            super().keyPressEvent(event)
+    
+    # -------------------------------------------------------------------------
+    def do_login(self):
+        # Check if login widgets exist (they may have been deleted by clear_window)
+        if not hasattr(self, 'username_entry') or not self.username_entry:
+            return
+        if not hasattr(self, 'password_entry') or not self.password_entry:
+            return
+        if not self.username_entry.get("edit") or not self.password_entry.get("edit"):
+            return
+        
+        # Check if the widgets are still valid (not deleted)
+        try:
+            username = self.username_entry["edit"].text().strip()
+            password = self.password_entry["edit"].text()
+        except RuntimeError:
+            return  # Widget has been deleted
+        
+        if not username:
+            self.show_error_notification("Please enter your username")
+            return
+        if not password:
+            self.show_error_notification("Please enter your password")
+            return
+        
+        self.login_btn.setText("⏳ Verifying...")
+        self.login_btn.setDisabled(True)
+        QTimer.singleShot(500, lambda: self.validate_login(username, password))
+    
+    def validate_login(self, username, password):
+        roles = ["admin", "receptionist", "dentist"]
+        user = None
+        selected_role = None
+        for role in roles:
+            user = self.db.authenticate_user(username, password, role)
+            if user:
+                selected_role = role
+                break
+        
+        if user:
+            current_user = {
+                "role": selected_role,
+                "name": user.get("staff_name", username),
+                "username": username,
+                "user_id": user["user_id"],
+            }
+            
+            # Save credentials if remember me is checked
+            if self.remember_cb.isChecked():
+                self.save_credentials(username, True)
+            else:
+                self.save_credentials("", False)
+            
+            self.show_success_notification(f"Welcome back, {current_user['name']}!")
+            QTimer.singleShot(500, lambda: self.show_dashboard(current_user))
+        else:
+            self.login_btn.setText("Secure Login")
+            self.login_btn.setDisabled(False)
+            self.show_error_notification("Invalid username or password")
+    
+    # -------------------------------------------------------------------------
+    def forgot_password(self):
+        """Show forgot password recovery flow"""
+        self.show_forgot_password_page()
+    
+    # -------------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    def show_forgot_password_page(self):
+        """Show the forgot password recovery page with QStackedWidget flow"""
+        self.clear_window()
+        
+        central = QWidget()
+        self.setCentralWidget(central)
+        
+        import os
+        image_path = "D:/dental_clinic_system/image/background.png"
+        if os.path.exists(image_path):
+            central.setStyleSheet(f"""
+                QWidget {{
+                    background-image: url("{image_path}");
+                    background-position: center;
+                    background-repeat: no-repeat;
+                }}
+            """)
+        else:
+            central.setStyleSheet("""
+                QWidget {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #E8F0FE, stop:1 #F0F4F8);
+                }
+            """)
+        
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addStretch()
+        
+        row = QHBoxLayout()
+        row.addStretch()
+        
+        # Create recovery card
+        recovery_card = QFrame()
+        recovery_card.setFixedSize(580, 650)
+        recovery_card.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 20px;
+            }
+        """)
+        shadow = QGraphicsDropShadowEffect(recovery_card)
+        shadow.setBlurRadius(50)
+        shadow.setOffset(0, 15)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        recovery_card.setGraphicsEffect(shadow)
+        
+        # QStackedWidget inside recovery_card
+        card_layout = QVBoxLayout(recovery_card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.forgot_pw_stacked_widget = QStackedWidget()
+        card_layout.addWidget(self.forgot_pw_stacked_widget)
+        
+        # Setup pages
+        self._setup_fp_page_username()
+        self._setup_fp_page_method()
+        self._setup_fp_page_code()
+        self._setup_fp_page_reset()
+        
+        row.addWidget(recovery_card)
+        row.addStretch()
+        main_layout.addLayout(row)
+        main_layout.addStretch()
+        
+        super().show()
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(50, self._position_exit_button)
+        self.forgot_pw_stacked_widget.setCurrentIndex(0)
+
+    def _setup_fp_page_username(self):
+        from PyQt6.QtCore import Qt
+        page = QWidget()
+        content = QVBoxLayout(page)
+        content.setContentsMargins(55, 55, 55, 45)
+        content.setSpacing(0)
+        
+        title = QLabel("Forgot Password?")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color:#1F2937;font-size:32px;font-weight:700;background:transparent;")
+        content.addWidget(title)
+        content.addSpacing(12)
+        
+        subtitle = QLabel("Enter your username to begin the recovery process.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color:#6B7280;font-size:14px;background:transparent;")
+        content.addWidget(subtitle)
+        content.addSpacing(35)
+        
+        u_lbl = QLabel("Username")
+        u_lbl.setStyleSheet("color:#1F2937;font-size:14px;font-weight:700;background:transparent;")
+        content.addWidget(u_lbl)
+        content.addSpacing(10)
+        
+        self.recovery_username_entry = self._make_input("e.g. dr_smith_01", icon="👤")
+        content.addWidget(self.recovery_username_entry["frame"])
+        content.addSpacing(30)
+        
+        continue_btn = QPushButton("Continue →")
+        continue_btn.setFixedHeight(52)
+        from PyQt6.QtCore import Qt
+        continue_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        continue_btn.setStyleSheet("""
+            QPushButton {
+                background-color:#1E3A8A;
+                color:white;
+                font-size:15px;
+                font-weight:700;
+                border-radius:10px;
+                border: none;
+            }
+            QPushButton:hover { background-color:#1E40AF; }
+        """)
+        continue_btn.clicked.connect(self._fp_verify_username)
+        content.addWidget(continue_btn)
+        content.addSpacing(20)
+        
+        back_row = QHBoxLayout()
+        back_row.addStretch()
+        back_btn = QPushButton("← Back to Login")
+        back_btn.setFlat(True)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setStyleSheet("""
+            QPushButton {
+                color:#0b76ef;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover { color:#1E3A8A; }
+        """)
+        back_btn.clicked.connect(self.show)
+        back_row.addWidget(back_btn)
+        back_row.addStretch()
+        content.addLayout(back_row)
+        content.addStretch()
+        
+        self.forgot_pw_stacked_widget.addWidget(page)
+
+    def _setup_fp_page_method(self):
+        page = QWidget()
+        content = QVBoxLayout(page)
+        content.setContentsMargins(55, 55, 55, 45)
+        content.setSpacing(0)
+        
+        from PyQt6.QtCore import Qt
+        title = QLabel("Verify Your Identity")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color:#1F2937;font-size:32px;font-weight:700;background:transparent;")
+        content.addWidget(title)
+        content.addSpacing(12)
+        
+        subtitle = QLabel("Choose how you would like to receive your recovery code.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color:#6B7280;font-size:14px;background:transparent;")
+        content.addWidget(subtitle)
+        content.addSpacing(35)
+        
+        self.recovery_method_container = QVBoxLayout()
+        self.recovery_method_container.setSpacing(15)
+        content.addLayout(self.recovery_method_container)
+        content.addSpacing(30)
+        
+        self.fp_send_code_btn = QPushButton("Send Recovery Code →")
+        self.fp_send_code_btn.setFixedHeight(52)
+        self.fp_send_code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fp_send_code_btn.setStyleSheet("""
+            QPushButton {
+                background-color:#1E3A8A;
+                color:white;
+                font-size:15px;
+                font-weight:700;
+                border-radius:10px;
+                border: none;
+            }
+            QPushButton:hover { background-color:#1E40AF; }
+            QPushButton:disabled { background-color:#94A3B8; }
+        """)
+        self.fp_send_code_btn.clicked.connect(self._fp_send_code)
+        self.fp_send_code_btn.setDisabled(True)
+        content.addWidget(self.fp_send_code_btn)
+        content.addSpacing(20)
+        
+        back_row = QHBoxLayout()
+        back_row.addStretch()
+        back_btn = QPushButton("← Back to login")
+        back_btn.setFlat(True)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setStyleSheet("""
+            QPushButton {
+                color:#0b76ef;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover { color:#1E3A8A; }
+        """)
+        back_btn.clicked.connect(lambda: self.forgot_pw_stacked_widget.setCurrentIndex(0))
+        back_row.addWidget(back_btn)
+        back_row.addStretch()
+        content.addLayout(back_row)
+        content.addStretch()
+        
+        info_lbl = QLabel("🛡️ This recovery step is part of our multi-factor authentication system to ensure your patient records remain confidential.")
+        info_lbl.setWordWrap(True)
+        info_lbl.setStyleSheet("color:#6B7280;font-size:12px;background:#F3F4F6;padding:15px;border-radius:10px;border:1px solid #E5E7EB;")
+        content.addWidget(info_lbl)
+        
+        self.forgot_pw_stacked_widget.addWidget(page)
+
+    def _fp_verify_username(self):
+        username = self.recovery_username_entry["edit"].text().strip()
+        if not username:
+            self.show_error_notification("Please enter your username")
+            return
+        if not self.db.check_username_exists(username):
+            self.show_error_notification("Username not found")
+            return
+            
+        self.recovery_username = username
+        self.selected_recovery_method = None
+        self.fp_send_code_btn.setDisabled(True)
+        
+        # clear previous
+        while self.recovery_method_container.count():
+            item = self.recovery_method_container.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        user = self.db.get_user_by_username(username)
+        email = user.get('email') if user else None
+        phone = self.db.get_user_phone(username)
+        
+        self.recovery_method_buttons = []
+        
+        if email:
+            masked_email = self._mask_email(email)
+            self._add_recovery_method_btn("email", "Recovery via Email", masked_email, "RECOMMENDED", "📧")
+        if phone:
+            masked_phone = self._mask_phone(phone)
+            self._add_recovery_method_btn("sms", "Recovery via SMS", masked_phone, "", "📱")
+            
+        if not email and not phone:
+            lbl = QLabel("No recovery methods available for this account. Please contact administrator.")
+            lbl.setStyleSheet("color:#DC3545;font-size:14px;background:transparent;")
+            self.recovery_method_container.addWidget(lbl)
+            
+        self.forgot_pw_stacked_widget.setCurrentIndex(1)
+        
+    def _mask_email(self, email):
+        if not email or "@" not in email: return email
+        parts = email.split("@")
+        name = parts[0]
+        if len(name) > 2:
+            name = name[:2] + "*" * (len(name) - 2)
+        return f"{name}@{parts[1]}"
+        
+    def _mask_phone(self, phone):
+        if not phone: return phone
+        if len(phone) > 4:
+            return f"{phone[:3]}***{phone[-2:]}"
+        return phone
+        
+    def _add_recovery_method_btn(self, method_id, title, desc, tag, icon):
+        btn = QPushButton()
+        btn.setFixedHeight(80)
+        from PyQt6.QtCore import Qt
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        layout = QHBoxLayout(btn)
+        layout.setContentsMargins(15, 10, 15, 10)
+        
+        icon_lbl = QLabel(icon)
+        icon_lbl.setStyleSheet("font-size:24px;background:transparent;")
+        layout.addWidget(icon_lbl)
+        
+        text_layout = QVBoxLayout()
+        if tag:
+            tag_lbl = QLabel(tag)
+            tag_lbl.setStyleSheet("color:#10B981;font-size:10px;font-weight:bold;background:transparent;")
+            text_layout.addWidget(tag_lbl)
+        
+        t_lbl = QLabel(title)
+        t_lbl.setStyleSheet("color:#1F2937;font-size:14px;font-weight:700;background:transparent;")
+        text_layout.addWidget(t_lbl)
+        
+        d_lbl = QLabel(desc)
+        d_lbl.setStyleSheet("color:#6B7280;font-size:12px;background:transparent;")
+        text_layout.addWidget(d_lbl)
+        
+        layout.addLayout(text_layout)
+        layout.addStretch()
+        
+        radio = QRadioButton()
+        radio.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(radio)
+        
+        btn.setStyleSheet("""
+            QPushButton {
+                background:white;
+                border:1px solid #E5E7EB;
+                border-radius:10px;
+                text-align: left;
+            }
+            QPushButton:hover {
+                border:1px solid #0b76ef;
+                background:#F3F4F6;
+            }
+        """)
+        
+        self.recovery_method_container.addWidget(btn)
+        
+        info = {"button": btn, "radio": radio, "method": method_id}
+        self.recovery_method_buttons.append(info)
+        
+        btn.clicked.connect(lambda: self._select_method(info))
+        
+    def _select_method(self, info):
+        self.selected_recovery_method = info["method"]
+        self.fp_send_code_btn.setDisabled(False)
+        for item in self.recovery_method_buttons:
+            item["radio"].setChecked(item == info)
+            if item == info:
+                item["button"].setStyleSheet("""
+                    QPushButton {
+                        background:#EFF6FF;
+                        border:2px solid #0b76ef;
+                        border-radius:10px;
+                        text-align: left;
+                    }
+                """)
+            else:
+                item["button"].setStyleSheet("""
+                    QPushButton {
+                        background:white;
+                        border:1px solid #E5E7EB;
+                        border-radius:10px;
+                        text-align: left;
+                    }
+                    QPushButton:hover {
+                        border:1px solid #0b76ef;
+                        background:#F3F4F6;
+                    }
+                """)
+
+    def _setup_fp_page_code(self):
+        page = QWidget()
+        content = QVBoxLayout(page)
+        content.setContentsMargins(55, 55, 55, 45)
+        content.setSpacing(0)
+        
+        from PyQt6.QtCore import Qt
+        title = QLabel("Enter Recovery Code")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color:#1F2937;font-size:32px;font-weight:700;background:transparent;")
+        content.addWidget(title)
+        content.addSpacing(12)
+        
+        self.code_subtitle = QLabel("We've sent a 6-digit code to your registered email address.")
+        self.code_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.code_subtitle.setWordWrap(True)
+        self.code_subtitle.setStyleSheet("color:#6B7280;font-size:14px;background:transparent;")
+        content.addWidget(self.code_subtitle)
+        content.addSpacing(35)
+        
+        # OTP Boxes
+        otp_layout = QHBoxLayout()
+        otp_layout.setSpacing(10)
+        otp_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.otp_inputs = []
+        for i in range(6):
+            le = QLineEdit()
+            le.setFixedSize(50, 60)
+            le.setMaxLength(1)
+            le.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            le.setStyleSheet("""
+                QLineEdit {
+                    background:#F3F4F6;
+                    border:1px solid #E5E7EB;
+                    border-radius:10px;
+                    font-size:24px;
+                    font-weight:700;
+                    color:#1F2937;
+                }
+                QLineEdit:focus { border:2px solid #1E3A8A; background:white; }
+            """)
+            le.textChanged.connect(lambda text, idx=i: self._on_otp_change(text, idx))
+            otp_layout.addWidget(le)
+            self.otp_inputs.append(le)
+            
+        content.addLayout(otp_layout)
+        content.addSpacing(30)
+        
+        self.fp_verify_btn = QPushButton("Verify Code →")
+        self.fp_verify_btn.setFixedHeight(52)
+        self.fp_verify_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fp_verify_btn.setStyleSheet("""
+            QPushButton {
+                background-color:#1E3A8A;
+                color:white;
+                font-size:15px;
+                font-weight:700;
+                border-radius:10px;
+                border: none;
+            }
+            QPushButton:hover { background-color:#1E40AF; }
+        """)
+        self.fp_verify_btn.clicked.connect(self._fp_verify_code)
+        content.addWidget(self.fp_verify_btn)
+        content.addSpacing(20)
+        
+        resend_layout = QHBoxLayout()
+        resend_layout.addStretch()
+        resend_lbl = QLabel("Didn't receive the code?")
+        resend_lbl.setStyleSheet("color:#6B7280;font-size:13px;background:transparent;")
+        resend_layout.addWidget(resend_lbl)
+        
+        self.resend_btn = QPushButton("Resend Code")
+        self.resend_btn.setFlat(True)
+        self.resend_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.resend_btn.setStyleSheet("""
+            QPushButton {
+                color:#10B981;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover { color:#059669; }
+            QPushButton:disabled { color:#9CA3AF; }
+        """)
+        self.resend_btn.clicked.connect(self._fp_send_code)
+        resend_layout.addWidget(self.resend_btn)
+        resend_layout.addStretch()
+        content.addLayout(resend_layout)
+        
+        content.addStretch()
+        
+        back_row = QHBoxLayout()
+        back_row.addStretch()
+        back_btn = QPushButton("← Back")
+        back_btn.setFlat(True)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setStyleSheet("""
+            QPushButton {
+                color:#0b76ef;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover { color:#1E3A8A; }
+        """)
+        back_btn.clicked.connect(lambda: self.forgot_pw_stacked_widget.setCurrentIndex(1))
+        back_row.addWidget(back_btn)
+        back_row.addStretch()
+        content.addLayout(back_row)
+        
+        self.forgot_pw_stacked_widget.addWidget(page)
+        
+        from PyQt6.QtCore import QTimer
+        self.resend_timer = QTimer(self)
+        self.resend_timer.timeout.connect(self._update_resend_timer)
+        self.resend_seconds = 0
+
+    def _on_otp_change(self, text, idx):
+        if text and idx < 5:
+            self.otp_inputs[idx+1].setFocus()
+        elif not text and idx > 0:
+            self.otp_inputs[idx-1].setFocus()
+
+    def _setup_fp_page_reset(self):
+        page = QWidget()
+        content = QVBoxLayout(page)
+        content.setContentsMargins(55, 55, 55, 45)
+        content.setSpacing(0)
+        
+        from PyQt6.QtCore import Qt
+        title = QLabel("Reset Your Password")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color:#1F2937;font-size:32px;font-weight:700;background:transparent;")
+        content.addWidget(title)
+        content.addSpacing(12)
+        
+        subtitle = QLabel("Please create a new secure password for your account.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color:#6B7280;font-size:14px;background:transparent;")
+        content.addWidget(subtitle)
+        content.addSpacing(35)
+        
+        # New Password
+        n_lbl = QLabel("New Password")
+        n_lbl.setStyleSheet("color:#1F2937;font-size:14px;font-weight:700;background:transparent;")
+        content.addWidget(n_lbl)
+        content.addSpacing(10)
+        
+        self.fp_new_pw_entry = self._make_input("Enter new password", icon="🔒", password=True)
+        content.addWidget(self.fp_new_pw_entry["frame"])
+        content.addSpacing(5)
+        n_hint = QLabel("Must be at least 8 characters long.")
+        n_hint.setStyleSheet("color:#9CA3AF;font-size:12px;background:transparent;")
+        content.addWidget(n_hint)
+        content.addSpacing(20)
+        
+        # Confirm Password
+        c_lbl = QLabel("Confirm New Password")
+        c_lbl.setStyleSheet("color:#1F2937;font-size:14px;font-weight:700;background:transparent;")
+        content.addWidget(c_lbl)
+        content.addSpacing(10)
+        
+        self.fp_conf_pw_entry = self._make_input("Confirm new password", icon="🔒", password=True)
+        content.addWidget(self.fp_conf_pw_entry["frame"])
+        content.addSpacing(30)
+        
+        # Submit
+        self.fp_submit_reset_btn = QPushButton("Reset Password →")
+        self.fp_submit_reset_btn.setFixedHeight(52)
+        self.fp_submit_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fp_submit_reset_btn.setStyleSheet("""
+            QPushButton {
+                background-color:#1E3A8A;
+                color:white;
+                font-size:15px;
+                font-weight:700;
+                border-radius:10px;
+                border: none;
+            }
+            QPushButton:hover { background-color:#1E40AF; }
+        """)
+        self.fp_submit_reset_btn.clicked.connect(self._fp_do_reset)
+        content.addWidget(self.fp_submit_reset_btn)
+        content.addSpacing(20)
+        
+        back_row = QHBoxLayout()
+        back_row.addStretch()
+        back_btn = QPushButton("← Back to Login")
+        back_btn.setFlat(True)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setStyleSheet("""
+            QPushButton {
+                color:#0b76ef;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover { color:#1E3A8A; }
+        """)
+        back_btn.clicked.connect(self.show)
+        back_row.addWidget(back_btn)
+        back_row.addStretch()
+        content.addLayout(back_row)
+        content.addStretch()
+        
+        self.forgot_pw_stacked_widget.addWidget(page)
+
+    def _fp_send_code(self):
+        import random
+        # Generate DB code
+        self.verification_code = f"{random.randint(100000, 999999)}"
+        self.db.save_reset_code(self.recovery_username, self.verification_code)
+        
+        method_txt = "email address" if self.selected_recovery_method == "email" else "phone number"
+        self.code_subtitle.setText(f"We've sent a 6-digit code to your registered {method_txt}.")
+        
+        for le in self.otp_inputs:
+            le.clear()
+        
+        # Start resend timer
+        self.resend_seconds = 30
+        self.resend_btn.setDisabled(True)
+        self.resend_btn.setText(f"Resend Code ({self.resend_seconds}s)")
+        self.resend_timer.start(1000)
+        
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Verification Code", 
+            f"Demo Mode: Your verification code is: {self.verification_code}")
+            
+        self.forgot_pw_stacked_widget.setCurrentIndex(2)
+        self.otp_inputs[0].setFocus()
+
+    def _update_resend_timer(self):
+        self.resend_seconds -= 1
+        if self.resend_seconds <= 0:
+            self.resend_timer.stop()
+            self.resend_btn.setText("Resend Code")
+            self.resend_btn.setDisabled(False)
+        else:
+            self.resend_btn.setText(f"Resend Code ({self.resend_seconds}s)")
+
+    def _fp_verify_code(self):
+        code = "".join([le.text() for le in self.otp_inputs])
+        if len(code) != 6 or not code.isdigit():
+            self.show_error_notification("Please enter a valid 6-digit code")
+            return
+            
+        if self.db.validate_reset_code(self.recovery_username, code):
+            self.show_success_notification("Code verified successfully!")
+            self.resend_timer.stop()
+            self.forgot_pw_stacked_widget.setCurrentIndex(3)
+        else:
+            self.show_error_notification("Invalid or expired verification code")
+
+    def _fp_do_reset(self):
+        new_pw = self.fp_new_pw_entry["edit"].text()
+        conf_pw = self.fp_conf_pw_entry["edit"].text()
+        
+        if not new_pw or not conf_pw:
+            self.show_error_notification("Please fill in all fields")
+            return
+        if new_pw != conf_pw:
+            self.show_error_notification("Passwords do not match")
+            return
+        if len(new_pw) < 8:
+            self.show_error_notification("Password must be at least 8 characters")
+            return
+            
+        success = self.db.update_user_password_by_username(self.recovery_username, new_pw)
+        if success:
+            self.db.clear_reset_code(self.recovery_username)
+            self.show_success_notification("Password reset successfully!")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(1500, self.show)
+        else:
+            self.show_error_notification("Failed to reset password. Please try again.")
+
+    def show_signup(self):
+        self.clear_window()
+        
+        central = QWidget()
+        self.setCentralWidget(central)
+        
+        # Set background
+        image_path = "D:/dental_clinic_system/image/background.png"
+        if os.path.exists(image_path):
+            central.setStyleSheet(f"""
+                QWidget {{
+                    background-image: url("{image_path}");
+                    background-position: center;
+                    background-repeat: no-repeat;
+                }}
+            """)
+        else:
+            central.setStyleSheet("""
+                QWidget {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #E8F0FE, stop:1 #F0F4F8);
+                }
+            """)
+        
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addStretch()
+        
+        row = QHBoxLayout()
+        row.addStretch()
+        
+        signup_card = QFrame()
+        signup_card.setFixedSize(600, 750)
+        signup_card.setStyleSheet("""
+            QFrame {
+                background: white;
+                border-radius: 20px;
+            }
+        """)
+        shadow = QGraphicsDropShadowEffect(signup_card)
+        shadow.setBlurRadius(50)
+        shadow.setOffset(0, 15)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        signup_card.setGraphicsEffect(shadow)
+        
+        outer = QVBoxLayout(signup_card)
+        outer.setContentsMargins(0, 0, 0, 0)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background:transparent;")
+        outer.addWidget(scroll)
+        
+        scroll_inner = QWidget()
+        scroll.setWidget(scroll_inner)
+        content = QVBoxLayout(scroll_inner)
+        content.setContentsMargins(40, 40, 40, 40)
+        content.setSpacing(12)
+        
+        title = QLabel("Create Account")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color:#1F2937;font-size:28px;font-weight:700;background:transparent;")
+        content.addWidget(title)
+        
+        sub = QLabel("Join LC Dental Clinic and start managing your practice")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet("color:#6B7280;font-size:14px;background:transparent;")
+        content.addWidget(sub)
+        content.addSpacing(20)
+        
+        # Role selection
+        role_label = QLabel("Select Your Role")
+        role_label.setStyleSheet("color:#374151;font-size:14px;font-weight:700;background:transparent;")
+        content.addWidget(role_label)
+        content.addSpacing(10)
+        
+        role_row = QHBoxLayout()
+        role_row.setSpacing(15)
+        self.signup_role_buttons = []
+        signup_roles = [
+            ("👨‍💼 Administrator", "admin", Config.COLORS["primary"]),
+            ("👩‍💼 Receptionist", "receptionist", Config.COLORS["secondary"]),
+            ("🦷 Dentist", "dentist", Config.COLORS["info"]),
+        ]
+        for text, role, color in signup_roles:
+            btn = QPushButton(text)
+            btn.setFixedHeight(50)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background:white;
+                    color:{color};
+                    border:2px solid {color};
+                    border-radius:12px;
+                    font-size:13px;
+                }}
+                QPushButton:hover {{
+                    background:{color};
+                    color:white;
+                }}
+            """)
+            btn.clicked.connect(lambda checked, r=role, c=color: self.select_signup_role(r, c))
+            role_row.addWidget(btn)
+            self.signup_role_buttons.append({"button": btn, "role": role, "color": color})
+        content.addLayout(role_row)
+        content.addSpacing(15)
+        
+        # Signup fields container
+        self.signup_fields_widget = QWidget()
+        self.signup_fields_layout = QVBoxLayout(self.signup_fields_widget)
+        self.signup_fields_layout.setContentsMargins(0, 0, 0, 0)
+        self.signup_fields_layout.setSpacing(12)
+        content.addWidget(self.signup_fields_widget)
+        
+        fields = [
+            ("Full Name", "signup_name_entry"),
+            ("Username", "signup_username_entry"),
+            ("Email Address", "signup_email_entry"),
+            ("Phone Number", "signup_phone_entry"),
+            ("Password", "signup_password_entry", "*"),
+            ("Confirm Password", "signup_confirm_entry", "*"),
+        ]
+        
+        for field in fields:
+            lbl = QLabel(field[0])
+            lbl.setStyleSheet("color:#374151;font-size:13px;font-weight:700;background:transparent;")
+            self.signup_fields_layout.addWidget(lbl)
+            
+            entry = QLineEdit()
+            entry.setPlaceholderText(f"Enter {field[0].lower()}")
+            entry.setFixedHeight(46)
+            entry.setStyleSheet("""
+                QLineEdit {
+                    border:1px solid #E5E7EB;
+                    border-radius:10px;
+                    padding:0 12px;
+                    font-size:14px;
+                    color:#1F2937;
+                    background:white;
+                }
+                QLineEdit:focus {
+                    border:2px solid #1E3A8A;
+                }
+            """)
+            if len(field) > 2:
+                entry.setEchoMode(QLineEdit.EchoMode.Password)
+            self.signup_fields_layout.addWidget(entry)
+            setattr(self, field[1], entry)
+            
+            if field[0] == "Password":
+                self.signup_strength_meter = QFrame()
+                self.signup_strength_meter.setFixedHeight(6)
+                self.signup_strength_meter.setStyleSheet("background:#E5E7EB;border-radius:3px;")
+                self.signup_fields_layout.addWidget(self.signup_strength_meter)
+                
+                self.signup_strength_label = QLabel("")
+                self.signup_strength_label.setStyleSheet("color:#9CA3AF;font-size:11px;background:transparent;")
+                self.signup_fields_layout.addWidget(self.signup_strength_label)
+                
+                entry.textChanged.connect(self.update_signup_password_strength)
+        
+        # Terms
+        self.terms_check = CustomCheckbox(parent=None, text="I agree to the Terms and Conditions")
+        self.signup_fields_layout.addWidget(self.terms_check)
+        self.signup_fields_layout.addSpacing(10)
+        
+        signup_btn = QPushButton("Create Account")
+        signup_btn.setFixedHeight(52)
+        signup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        signup_btn.setStyleSheet("""
+            QPushButton {
+                background:#1E3A8A;
+                color:white;
+                font-size:15px;
+                font-weight:700;
+                border-radius:12px;
+                border: none;
+            }
+            QPushButton:hover {
+                background:#1E40AF;
+            }
+        """)
+        signup_btn.clicked.connect(self.do_signup)
+        self.signup_fields_layout.addWidget(signup_btn)
+        self.signup_fields_layout.addSpacing(10)
+        
+        # Login link
+        login_row = QHBoxLayout()
+        login_row.addStretch()
+        already = QLabel("Already have an account?")
+        already.setStyleSheet("color:#6B7280;font-size:13px;background:transparent;")
+        login_row.addWidget(already)
+        login_link = QPushButton("Sign In")
+        login_link.setFlat(True)
+        login_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        login_link.setStyleSheet("""
+            QPushButton {
+                color:#1E40AF;
+                font-size:13px;
+                font-weight:700;
+                border:none;
+                background:transparent;
+            }
+            QPushButton:hover {
+                color:#1E3A8A;
+            }
+        """)
+        login_link.clicked.connect(self.show)
+        login_row.addWidget(login_link)
+        login_row.addStretch()
+        self.signup_fields_layout.addLayout(login_row)
+        
+        self.hide_signup_fields()
+        
+        row.addWidget(signup_card)
+        row.addStretch()
+        main_layout.addLayout(row)
+        main_layout.addStretch()
+        super().show()
+        QTimer.singleShot(50, self._position_exit_button)
+    
+    # -------------------------------------------------------------------------
+    def update_signup_password_strength(self, *_):
+        password = self.signup_password_entry.text()
+        strength = 0
+        criteria = []
+        if len(password) >= 8:
+            strength += 25
+            criteria.append("✓ 8+ characters")
+        if re.search(r'[A-Z]', password):
+            strength += 25
+            criteria.append("✓ Uppercase")
+        if re.search(r'[0-9]', password):
+            strength += 25
+            criteria.append("✓ Number")
+        if re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+            strength += 25
+            criteria.append("✓ Special")
+        
+        if strength <= 0:
+            self.signup_strength_label.setText("")
+            self.signup_strength_meter.setStyleSheet("background:#E5E7EB;border-radius:3px;")
+            return
+        
+        if strength <= 25:
+            color, text = "#DC3545", "Weak"
+        elif strength <= 50:
+            color, text = "#FFC107", "Fair"
+        elif strength <= 75:
+            color, text = "#17A2B8", "Good"
+        else:
+            color, text = "#28A745", "Strong"
+        
+        self.signup_strength_meter.setStyleSheet(
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            f"stop:0 {color}, stop:{strength/100} {color}, "
+            f"stop:{strength/100 + 0.001} #E5E7EB, stop:1 #E5E7EB);"
+            f"border-radius:3px;"
+        )
+        criteria_text = " • ".join(criteria) if criteria else ""
+        self.signup_strength_label.setText(f"{text} - {criteria_text}")
+        self.signup_strength_label.setStyleSheet(f"color:{color};font-size:11px;background:transparent;")
+    
+    # -------------------------------------------------------------------------
+    def select_signup_role(self, role, color):
+        self.selected_signup_role = role
+        for info in self.signup_role_buttons:
+            btn = info["button"]
+            c = info["color"]
+            if info["role"] == role:
+                btn.setStyleSheet(f"""
+                    QPushButton{{
+                        background:{c};
+                        color:white;
+                        border:2px solid {c};
+                        border-radius:12px;
+                        font-size:13px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton{{
+                        background:white;
+                        color:{c};
+                        border:2px solid {c};
+                        border-radius:12px;
+                        font-size:13px;
+                    }}
+                    QPushButton:hover{{
+                        background:{c};
+                        color:white;
+                    }}
+                """)
+        self.show_signup_fields()
+    
+    def hide_signup_fields(self):
+        self.signup_fields_widget.setVisible(False)
+    
+    def show_signup_fields(self):
+        self.signup_fields_widget.setVisible(True)
+    
+    # -------------------------------------------------------------------------
+    def do_signup(self):
+        if not getattr(self, "selected_signup_role", None):
+            self.show_error_notification("Please select a role first")
+            return
+        name = self.signup_name_entry.text().strip()
+        username = self.signup_username_entry.text().strip()
+        password = self.signup_password_entry.text()
+        confirm = self.signup_confirm_entry.text()
+        email = self.signup_email_entry.text().strip()
+        
+        if not all([name, username, password]):
+            self.show_error_notification("Please fill in all required fields")
+            return
+        if password != confirm:
+            self.show_error_notification("Passwords do not match")
+            return
+        if len(password) < 8:
+            self.show_error_notification("Password must be at least 8 characters")
+            return
+        if not self.terms_check.isChecked():
+            self.show_error_notification("Please agree to the Terms and Conditions")
+            return
+        if self.db.check_username_exists(username):
+            self.show_error_notification("Username already exists")
+            return
+        
+        user_id = self.db.create_user(
+            username, password, self.selected_signup_role, email, name
+        )
+        if user_id:
+            self.show_success_notification(f"Account created successfully! Welcome, {name}!")
+            QTimer.singleShot(1500, self.show)
+        else:
+            self.show_error_notification("Failed to create account. Please try again.")
+    
+    # -------------------------------------------------------------------------
+    def _toast(self, title, message, bg):
+        toast = QWidget(self, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+        toast.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        toast.setStyleSheet(f"background:{bg};border-radius:8px;")
+        toast.setFixedSize(360, 80)
+        
+        v = QVBoxLayout(toast)
+        v.setContentsMargins(15, 8, 15, 8)
+        t = QLabel(title)
+        t.setStyleSheet("color:white;font-size:12px;font-weight:700;background:transparent;")
+        m = QLabel(message)
+        m.setWordWrap(True)
+        m.setStyleSheet("color:white;font-size:11px;background:transparent;")
+        v.addWidget(t)
+        v.addWidget(m)
+        
+        geo = self.geometry()
+        toast.move(geo.x() + geo.width() - 380, geo.y() + 20)
+        toast.show()
+        QTimer.singleShot(3000, toast.close)
+    
+    def show_error_notification(self, message):
+        self._toast("❌ Error", message, Config.COLORS.get("danger", "#DC3545"))
+    
+    def show_success_notification(self, message):
+        self._toast("✓ Success", message, Config.COLORS.get("success", "#28A745"))
+    
+    # -------------------------------------------------------------------------
+    def show_dashboard(self, current_user):
+        self.showNormal()
+        self.hide()  # Hide login window
+        self.dashboard = DashboardGUI(self.db)
+        self.dashboard.show()
+    
+    def exit(self):
+        if self.db:
+            self.db.close()
+        QApplication.quit()
+    
+    def clear_window(self):
+        old = self.centralWidget()
+        if old is not None:
+            old.deleteLater()
